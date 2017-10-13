@@ -35,7 +35,7 @@ type CanaryDeploy struct {
 }
 
 type CanaryDeploySpec struct {
-	Hello string `json:"hello"`
+	LabelSelectors map[string]string `json:"labelSelectors"`
 }
 
 type CanaryDeployList struct {

@@ -100,3 +100,6 @@ spec:
       containers:
       - name: canary-operator
         image: canary-operator:0.1
+        env:
+        - name: KUBERNETES_SERVICE_PORT
+          value: 6443

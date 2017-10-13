@@ -24,7 +24,9 @@ import (
 	"fmt"
 
 	opkit "github.com/rook/operator-kit"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	listers "k8s.io/client-go/listers/extensions/v1beta1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -40,6 +42,16 @@ type CanaryDeployController struct {
 	context  *opkit.Context
 	scheme   *runtime.Scheme
 	resource opkit.CustomResource
+	dLister  listers.DeploymentLister
+}
+
+func NewController(ctx *opkit.Context, r opkit.CustomResource) CanaryDeployController {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{"namespace": cache.MetaNamespaceIndexFunc})
+	return CanaryDeployController{
+		context:  ctx,
+		resource: r,
+		dLister:  listers.NewDeploymentLister(indexer),
+	}
 }
 
 // Watch watches for instances of CanaryDeploy custom resources and acts on them
@@ -55,6 +67,7 @@ func (c *CanaryDeployController) StartWatch(namespace string, stopCh chan struct
 		UpdateFunc: c.onUpdate,
 		DeleteFunc: c.onDelete,
 	}
+
 	watcher := opkit.NewWatcher(c.resource, namespace, resourceHandlers, client)
 	go watcher.Watch(&CanaryDeploy{}, stopCh)
 	return nil
@@ -72,16 +85,27 @@ func (c *CanaryDeployController) onAdd(obj interface{}) {
 	}
 	canaryDeployCopy := copyObj.(*CanaryDeploy)
 
-	logger.Infof("Added canaryDeploy '%s' with Hello=%s!", canaryDeployCopy.Name, canaryDeployCopy.Spec.Hello)
+	ls, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: canaryDeployCopy.Spec.LabelSelectors})
+	if err != nil {
+		fmt.Printf("Cannot deserialize label selector: %v\n", err)
+		return
+	}
+	deployments, err := c.dLister.List(ls)
+	if err != nil {
+		fmt.Printf("Cannot list deployments: %v\n", err)
+		return
+	}
+
+	logger.Infof("Added canaryDeploy '%s' that targets %s!", canaryDeployCopy.Name, deployments)
 }
 
 func (c *CanaryDeployController) onUpdate(oldObj, newObj interface{}) {
 	oldCanaryDeploy := oldObj.(*CanaryDeploy)
 	newCanaryDeploy := newObj.(*CanaryDeploy)
-	logger.Infof("Updated canaryDeploy '%s' from %s to %s!", newCanaryDeploy.Name, oldCanaryDeploy.Spec.Hello, newCanaryDeploy.Spec.Hello)
+	logger.Infof("Updated canaryDeploy '%s' from %s!", newCanaryDeploy.Name, oldCanaryDeploy)
 }
 
 func (c *CanaryDeployController) onDelete(obj interface{}) {
 	canaryDeploy := obj.(*CanaryDeploy)
-	logger.Infof("Deleted canaryDeploy '%s' with Hello=%s!", canaryDeploy.Name, canaryDeploy.Spec.Hello)
+	logger.Infof("Deleted canaryDeploy '%s'!", canaryDeploy.Name)
 }

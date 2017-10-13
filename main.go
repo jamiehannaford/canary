@@ -60,7 +60,7 @@ func main() {
 
 	// start watching the custom resource
 	logger.Infof("Managing the %s resource", customResourceName)
-	controller := &CanaryDeployController{context: context, resource: customResource}
+	controller := NewController(context, customResource)
 	controller.StartWatch(v1.NamespaceAll, stopChan)
 
 	for {
