@@ -1,0 +1,10 @@
+apiVersion: mycompany.io/v1alpha1
+kind: CanaryDeploy
+metadata:
+  name: mydeploy
+spec:
+  labelSelectors: app=test
+  image: "nginx:1.12.0"
+  rolloutPolicy:
+    duration: 1m
+    rateOfChange: steady

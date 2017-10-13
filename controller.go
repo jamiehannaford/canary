@@ -24,9 +24,10 @@ import (
 	"fmt"
 
 	opkit "github.com/rook/operator-kit"
+	appsv1 "k8s.io/api/apps/v1beta1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	listers "k8s.io/client-go/listers/extensions/v1beta1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -42,15 +43,12 @@ type CanaryDeployController struct {
 	context  *opkit.Context
 	scheme   *runtime.Scheme
 	resource opkit.CustomResource
-	dLister  listers.DeploymentLister
 }
 
 func NewController(ctx *opkit.Context, r opkit.CustomResource) CanaryDeployController {
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{"namespace": cache.MetaNamespaceIndexFunc})
 	return CanaryDeployController{
 		context:  ctx,
 		resource: r,
-		dLister:  listers.NewDeploymentLister(indexer),
 	}
 }
 
@@ -85,18 +83,115 @@ func (c *CanaryDeployController) onAdd(obj interface{}) {
 	}
 	canaryDeployCopy := copyObj.(*CanaryDeploy)
 
-	ls, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: canaryDeployCopy.Spec.LabelSelectors})
-	if err != nil {
-		fmt.Printf("Cannot deserialize label selector: %v\n", err)
-		return
-	}
-	deployments, err := c.dLister.List(ls)
+	logger.Infof("Targetting %s", canaryDeployCopy.Spec.LabelSelectors)
+
+	deployments, err := c.context.Clientset.AppsV1beta1().Deployments("").List(metav1.ListOptions{
+		LabelSelector: canaryDeployCopy.Spec.LabelSelectors,
+	})
 	if err != nil {
 		fmt.Printf("Cannot list deployments: %v\n", err)
 		return
 	}
 
-	logger.Infof("Added canaryDeploy '%s' that targets %s!", canaryDeployCopy.Name, deployments)
+	desiredImage := canaryDeployCopy.Spec.Image
+	//creationTime := canaryDeployCopy.GetCreationTimestamp()
+
+	for _, existing := range deployments.Items {
+		// ensure we skip existing canary deploys
+		if existing.Labels["role"] == "auto-canary" {
+			continue
+		}
+
+		logger.Infof("Inspecting deploy/%s", existing.Name)
+		actualImage := existing.Spec.Template.Spec.Containers[0].Image
+		if actualImage != desiredImage {
+			fmt.Printf("Existing: %#v", existing)
+			exists, err := c.canaryDeployExists(canaryDeployCopy.Spec.LabelSelectors)
+			if err != nil {
+				fmt.Printf("Cannot see whether deploy already exists: %v\n", err)
+				return
+			}
+			if !exists {
+				c.createCanaryDeployment(existing)
+			} else {
+				c.updateCanaryDeployment(existing)
+			}
+			c.scaleDownUserDeployment(existing)
+		}
+	}
+}
+
+func (c *CanaryDeployController) canaryDeployExists(labelSelectors string) (bool, error) {
+	deployments, err := c.context.Clientset.AppsV1beta1().Deployments("").List(metav1.ListOptions{
+		LabelSelector: labelSelectors + ",role=auto-canary",
+	})
+	if err != nil {
+		fmt.Printf("Cannot list deployments: %v\n", err)
+		return false, err
+	}
+	return len(deployments.Items) > 0, nil
+}
+
+func (c *CanaryDeployController) createCanaryDeployment(existing appsv1.Deployment) {
+	for {
+		replicas := int32(1)
+
+		spec := existing.Spec
+		spec.Replicas = &replicas
+		spec.Template.Labels["role"] = "auto-canary"
+
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("canary-%s", existing.ObjectMeta.Name),
+				Namespace: existing.Namespace,
+			},
+			Spec: spec,
+		}
+
+		fmt.Printf("%#v\n", deployment)
+		if _, err := c.context.Clientset.AppsV1beta1().Deployments(deployment.Namespace).Create(deployment); errors.IsConflict(err) {
+			logger.Infof("Encountered conflict, retrying...")
+			deployment, err = c.context.Clientset.AppsV1beta1().Deployments("").Get(deployment.Name, metav1.GetOptions{})
+			if err != nil {
+				logger.Errorf("Fatal error when retrieving deployment: %v", err)
+				break
+			}
+		} else if err != nil {
+			logger.Errorf("Fatal error when updating (that's not a conflict): %v", err)
+			return
+		} else {
+			logger.Infof("Successfully created new canary deploy for %s", deployment.Name)
+			return
+		}
+	}
+}
+
+func (c *CanaryDeployController) updateCanaryDeployment(deployment appsv1.Deployment) {
+
+}
+
+func (c *CanaryDeployController) scaleDownUserDeployment(deployment appsv1.Deployment) {
+	for {
+		delta := int32(1)
+		newCount := *deployment.Spec.Replicas - delta
+		deployment.Spec.Replicas = &newCount
+		fmt.Printf("%#v\n", deployment)
+		if _, err := c.context.Clientset.AppsV1beta1().Deployments(deployment.Namespace).Update(&deployment); errors.IsConflict(err) {
+			logger.Infof("Encountered conflict, retrying...")
+			dep, err := c.context.Clientset.AppsV1beta1().Deployments("").Get(deployment.Name, metav1.GetOptions{})
+			if err != nil {
+				logger.Errorf("Fatal error when retrieving deployment: %v", err)
+				break
+			}
+			deployment = *dep
+		} else if err != nil {
+			logger.Errorf("Fatal error when updating (that's not a conflict): %v", err)
+			return
+		} else {
+			logger.Infof("Successfully scaled deploy/%s by %d", deployment.Name, delta)
+			return
+		}
+	}
 }
 
 func (c *CanaryDeployController) onUpdate(oldObj, newObj interface{}) {

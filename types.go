@@ -35,7 +35,14 @@ type CanaryDeploy struct {
 }
 
 type CanaryDeploySpec struct {
-	LabelSelectors map[string]string `json:"labelSelectors"`
+	LabelSelectors string        `json:"labelSelectors"`
+	Image          string        `json:"image"`
+	RolloutPolicy  RolloutPolicy `json:"rolloutPolicy"`
+}
+
+type RolloutPolicy struct {
+	Duration     string `json:"duration"`
+	RateOfChange string `json:"rateOfChange"`
 }
 
 type CanaryDeployList struct {

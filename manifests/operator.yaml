@@ -1,0 +1,19 @@
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: canary-operator
+  namespace: default
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: canary-operator
+    spec:
+      serviceAccountName: canary-operator
+      containers:
+      - name: canary-operator
+        image: canary-operator:0.1
+        env:
+        - name: KUBERNETES_SERVICE_PORT
+          value: 6443
